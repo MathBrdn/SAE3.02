@@ -1,92 +1,79 @@
-"""
-Code du master, responsable de :
-- gérer les connexions vers les routeurs,
-- envoyer des messages,
-- orchestrer le routage anonyme (plus tard),
-- servir de point d’entrée pour les clients.
-"""
-
 import socket
 import threading
-from router import Router
 
 class Master:
-    """
-    Classe Master, gère la communication entre les clients et les routeurs.
-    """
+    # === Attribut de classe ===
+    router_list = {}   # Un seul Master → acceptable
 
-    def __init__(self, ip, port):
-        """
-        Initialise un Master.
-        Paramètres :
-        ip: int -> adresse ip du master
-        port: int -> port d'écoute du master
-        """
-        
-        self.__ip = ip
-        self.__port = port
-        self.__server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) #crée la socket server qui va permette d'écouter les connexions errantes
-        self.__server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) #autorise la réutilisation de la socket.
-        self.__running = False
-        self.__routers = []
+    def __init__(self, master_ip="127.0.0.1", master_port=5000):
+        self.__master_ip = master_ip
+        self.__master_port = master_port
 
-    def __str__(self):
-        """Affichage"""
-        
-        return f"master écoutant sur {self.__ip}:{self.__port}"
+    # ============================
+    # Getters / Setters
+    # ============================
+    def get_master_ip(self):
+        return self.__master_ip
 
-    def add_router(self, ip, port):
-        """Ajoute un routeur dans la liste."""
-        
-        self.__routers.append((ip, port))
-        print(f"master: Routeur ajouté : {ip}:{port}")
+    def get_master_port(self):
+        return self.__master_port
 
-    def create_router(self, ip, port):
-        """
-        Exemple de la solution 2 :
-        Crée un routeur via import DYNAMIQUE.
-        """
-         
-        return Router(ip, port)
+    def set_master_ip(self, new_ip):
+        self.__master_ip = new_ip
 
-    def start_listen(self):
-        """Démarre l'écoute du master."""
+    def set_master_port(self, new_port):
+        self.__master_port = new_port
 
-        self.__server_socket.bind((self.__ip, self.__port))
-        self.__server_socket.listen(20) #écoute jusqu'à 20 connexions
-        print(f"master: Ecoute sur {self.__ip}:{self.__port}")
-        self.__running = True
+    # ============================
+    # Gestion des routeurs
+    # ============================
+    def add_router(self, router_id, port, public_key):
+        Master.router_list[router_id] = (port, public_key)
+        print(f"[MASTER] Routeur {router_id} ajouté → port={port}, key={public_key}")
 
-        while self.__running:
-            client_socket, addr = self.__server_socket.accept()
-            print(f"master: Client connecté : {addr}")
+    # ============================
+    # Connexions routeur / client
+    # ============================
 
-            thread = threading.Thread(
-                target=self.gestion_client,
-                args=(client_socket, addr),
-                daemon=True
-            )
-            thread.start()
-    
-    #inutile pour l'instant car le script client n'est pas finit!
-    #def gestion_client(self, client_socket, source):
-        #"""Gère un client dans un thread séparé."""
-        #print(f"Master: Nouveau client géré : {source}")
-        #client_socket.close()
+    def handle_router(self, conn):
+        data = conn.recv(1024).decode().strip()
 
-    def send_router(self, routeur_ip, routeur_port, message):
-        """Envoie un message à un routeur."""
+        print(f"[MASTER] Message brut reçu du routeur : '{data}'")
 
-        print(f"master: Envoi d'un message au routeur {routeur_ip}:{routeur_port}")
+        parts = data.split()
+        if len(parts) < 3:
+            print("[MASTER] ERREUR : message routeur invalide :", parts)
+            conn.close()
+            return
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((routeur_ip, routeur_port))
-        sock.sendall(message.encode())
-        sock.close()
+        router_id = parts[0]
+        public_key = parts[1]
+        listen_port = int(parts[2])
+
+        self.add_router(router_id, listen_port, public_key)
+        conn.close()
+
+
+    # ============================
+    # Boucle principale
+    # ============================
+    def start(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((self.__master_ip, self.__master_port))
+        s.listen()
+
+        print(f"[MASTER] Écoute sur {self.__master_ip}:{self.__master_port}")
+
+        while True:
+            conn, addr = s.accept()
+            mode = conn.recv(6).decode()
+
+            if mode == "ROUTER":
+                threading.Thread(target=self.handle_router, args=(conn,)).start()
+            elif mode == "CLIENT":
+                threading.Thread(target=self.handle_client, args=(conn,)).start()
 
 
 if __name__ == "__main__":
-    print("Démarrage du Master")
-    master = Master("127.0.0.1", 4000)
-    master.add_router("127.0.0.1", 5000)
-    master.start_listen()
+    master = Master()
+    master.start()

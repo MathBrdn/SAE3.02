@@ -1,74 +1,96 @@
-"""
-Code du routeur, contient la classe Router.
-"""
-
 import socket
 import threading
-
+import random
 
 class Router:
-    """
-    Classe Router, permet de créer un routeur virtuel simple.
-    """
+    def __init__(self, router_id, listen_port, master: object):
+        self.__id = router_id
+        self.__listen_port = listen_port
+        self.__master = master  # Agrégation
+        self.__public_key = self.generate_public_key()
 
-    def __init__(self, ip, port):
-        """Initialise un routeur avec une IP et un port."""
-        self.__ip = ip
-        self.__port = port
-        self.__server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) #crée la socket server qui va permette d'écouter les connexions errantes.
-        self.__server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) #autorise la réutilisation de la socket.
-        self.__running = False
+    # ============================
+    # Getters / Setters
+    # ============================
+    def get_id(self):
+        return self.__id
 
-    def __str__(self):
-        return f"Routeur écoutant sur {self.__ip}:{self.__port}"
+    def get_public_key(self):
+        return self.__public_key
 
-    def connection(self, conn_socket, source):
-        """
-        Méthode exécutée dans un thread.
-        Gère une connexion TCP entrante.
-        """
+    def get_listen_port(self):
+        return self.__listen_port
 
-        print(f"ROUTEUR {self.__port}: Connexion établie avec {source}")
+    # ============================
+    # Clé publique
+    # ============================
+    def generate_public_key(self, length=20):
+        return ''.join(str(random.randint(0, 1)) for _ in range(length))
 
-        try:
-            conn_socket.close() # Fermeture propre de la socket.
-        except Exception as e:
-            print(f"ERREUR ROUTEUR: Impossible de fermer la connexion : {e}")
+    # ============================
+    # Chiffrement simple bidon
+    # ============================
+    def decrypt_layer(self, text):
+        return ''.join(chr(ord(c) ^ 1) for c in text)
 
-    def start_listen(self):
-        """Démarre l'écoute du routeur (bind + listen + accept en boucle)."""
+    # ============================
+    # Enregistrement auprès du Master
+    # ============================
+    def register_master(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((self.__master.get_master_ip(), self.__master.get_master_port()))
 
-        try:
-            self.__server_socket.bind((self.__ip, self.__port))
-            self.__server_socket.listen(20)
-            print(f"router {self.__port}: Ecoute sur {self.__ip}:{self.__port}")
-        except Exception as e:
-            print(f"ERREUR ROUTEUR: Impossible de démarrer l'écoute : {e}")
-            return
+        msg = f"{self.__id} {self.__public_key} {self.__listen_port}"
+        s.send(msg.encode())
+        s.close()
 
-        self.__running = True
+        print(f"[ROUTER {self.__id}] Enregistré au Master.")
 
-        # Acceptation de connexions en boucle
-        while self.__running:
-            try:
-                conn_socket, source = self.__server_socket.accept()
-            except Exception as e:
-                print(f"ERREUR ROUTEUR: Erreur lors de accept() : {e}")
-                continue
+    # ============================
+    # Écoute des messages
+    # ============================
+    def listen(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("0.0.0.0", self.__listen_port))
+        s.listen()
 
-            # Thread de gestion de connexion
-            try:
-                thread = threading.Thread(
-                    target=self.connection,
-                    args=(conn_socket, source),
-                    daemon=True
-                )
-                thread.start()
-            except Exception as e:
-                print(f"ERREUR ROUTEUR: Impossible de lancer un thread : {e}")
+        print(f"[ROUTER {self.__id}] Écoute sur {self.__listen_port}")
+
+        while True:
+            conn, addr = s.accept()
+            data = conn.recv(4096).decode()
+            conn.close()
+
+            print(f"[ROUTER {self.__id}] Reçu : {data}")
+
+            parts = data.split(" ", 2)
+            next_ip = parts[0]
+            next_port = int(parts[1])
+            payload = parts[2]
+
+            decrypted = self.decrypt_layer(payload)
+
+            out = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            out.connect((next_ip, next_port))
+            out.send(decrypted.encode())
+            out.close()
+
+            print(f"[ROUTER {self.__id}] Forward vers {next_ip}:{next_port}")
+
+    # ============================
+    # Démarrage
+    # ============================
+    def start(self):
+        self.register_master()
+        self.listen()
 
 
 if __name__ == "__main__":
-    print("Démarrage du routeur...")
-    routeur = Router("127.0.0.1", 5000)
-    routeur.start_listen()
+    from master import Master
+    master = Master()
+    r1 = Router("R1", 6001, master)
+    r1.start()
+    r2 = Router("R2", 6002, master)
+    r2.start()
+    r3 = Router("R3", 6003, master)
+    r3.start()
