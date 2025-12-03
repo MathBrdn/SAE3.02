@@ -1,96 +1,108 @@
 import socket
 import threading
 import random
+import sys
+from master import Master
 
-class Router:
-    def __init__(self, router_id, listen_port, master: object):
-        self.__id = router_id
-        self.__listen_port = listen_port
-        self.__master = master  # Agrégation
-        self.__public_key = self.generate_public_key()
 
-    # ============================
-    # Getters / Setters
-    # ============================
+class Routeur:
+    """
+    Représente un routeur du réseau : il se déclare au Master et relaye les messages.
+    """
+
+    def __init__(self, id_routeur, port_ecoute, master: Master):
+        self.__id_routeur = id_routeur
+        self.__port_ecoute = port_ecoute
+        self.__master = master
+        self.__cle_publique = self.generer_cle_publique()
+
+    # --- Accesseurs ---
     def get_id(self):
-        return self.__id
+        return self.__id_routeur
 
-    def get_public_key(self):
-        return self.__public_key
+    def get_cle_publique(self):
+        return self.__cle_publique
 
-    def get_listen_port(self):
-        return self.__listen_port
+    def get_port_ecoute(self):
+        return self.__port_ecoute
 
-    # ============================
-    # Clé publique
-    # ============================
-    def generate_public_key(self, length=20):
-        return ''.join(str(random.randint(0, 1)) for _ in range(length))
+    # --- Génération de clé ---
+    def generer_cle_publique(self, longueur=20):
+        """Génère une clé publique binaire aléatoire."""
+        return ''.join(str(random.randint(0, 1)) for _ in range(longueur))
 
-    # ============================
-    # Chiffrement simple bidon
-    # ============================
-    def decrypt_layer(self, text):
-        return ''.join(chr(ord(c) ^ 1) for c in text)
+    # --- Déchiffrement simple ---
+    def dechiffrer_couche(self, texte):
+        """Déchiffrement XOR très simple."""
+        return ''.join(chr(ord(c) ^ 1) for c in texte)
 
-    # ============================
-    # Enregistrement auprès du Master
-    # ============================
-    def register_master(self):
+    # --- Déclaration au Master ---
+    def envoyer_infos_master(self):
+        """Envoie ID, clé publique et port d'écoute au Master."""
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((self.__master.get_master_ip(), self.__master.get_master_port()))
+        s.connect((self.__master.get_ip_master(), self.__master.get_port_master()))
 
-        msg = f"{self.__id} {self.__public_key} {self.__listen_port}"
-        s.send(msg.encode())
+        message = f"ROUTER {self.__id_routeur} {self.__cle_publique} {self.__port_ecoute}"
+        s.send(message.encode())
         s.close()
 
-        print(f"[ROUTER {self.__id}] Enregistré au Master.")
+        print(f"{self.__id_routeur} → Déclaré au Master")
 
-    # ============================
-    # Écoute des messages
-    # ============================
-    def listen(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("0.0.0.0", self.__listen_port))
-        s.listen()
+    # --- Boucle d'écoute ---
+    def ecouter(self):
+        """Attend les messages des routeurs précédents ou du client."""
+        serveur = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        serveur.bind(("0.0.0.0", self.__port_ecoute))
+        serveur.listen()
 
-        print(f"[ROUTER {self.__id}] Écoute sur {self.__listen_port}")
+        print(f"{self.__id_routeur} écoute sur le port {self.__port_ecoute}")
 
         while True:
-            conn, addr = s.accept()
-            data = conn.recv(4096).decode()
-            conn.close()
+            connexion, adresse = serveur.accept()
+            donnees = connexion.recv(4096).decode()
+            connexion.close()
 
-            print(f"[ROUTER {self.__id}] Reçu : {data}")
+            print(f"{self.__id_routeur} ← Message reçu : {donnees}")
 
-            parts = data.split(" ", 2)
-            next_ip = parts[0]
-            next_port = int(parts[1])
-            payload = parts[2]
+            ip_suivante, port_suivant, contenu = donnees.split(" ", 2)
+            contenu_dechiffre = self.dechiffrer_couche(contenu)
 
-            decrypted = self.decrypt_layer(payload)
+            sortie = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sortie.connect((ip_suivante, int(port_suivant)))
+            sortie.send(contenu_dechiffre.encode())
+            sortie.close()
 
-            out = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            out.connect((next_ip, next_port))
-            out.send(decrypted.encode())
-            out.close()
+            print(f"{self.__id_routeur} → Transmis vers {ip_suivante}:{port_suivant}")
 
-            print(f"[ROUTER {self.__id}] Forward vers {next_ip}:{next_port}")
-
-    # ============================
-    # Démarrage
-    # ============================
-    def start(self):
-        self.register_master()
-        self.listen()
+    # --- Lancement du routeur ---
+    def demarrer(self):
+        """Déclare le routeur au Master puis lance la boucle d'écoute."""
+        self.envoyer_infos_master()
+        self.ecouter()
 
 
+# --- Exécution depuis le terminal ---
 if __name__ == "__main__":
-    from master import Master
     master = Master()
-    r1 = Router("R1", 6001, master)
-    r1.start()
-    r2 = Router("R2", 6002, master)
-    r2.start()
-    r3 = Router("R3", 6003, master)
-    r3.start()
+
+    PORTS = {"R1": 6001, "R2": 6002, "R3": 6003}
+
+    # Exemple : python router.py R2
+    if len(sys.argv) == 2:
+        id_routeur = sys.argv[1]
+
+        if id_routeur not in PORTS:
+            print("Routeurs valides : R1, R2, R3")
+            exit(1)
+
+        Routeur(id_routeur, PORTS[id_routeur], master).demarrer()
+
+    # Démarage groupé de tous les routeurs
+    elif len(sys.argv) == 1:
+        print("Démarrage des trois routeurs…")
+
+        for id_routeur, port in PORTS.items():
+            threading.Thread(target=Routeur(id_routeur, port, master).demarrer).start()
+
+    else:
+        print("Usage :\n python router.py R3\n python router.py")

@@ -2,78 +2,78 @@ import socket
 import threading
 
 class Master:
-    # === Attribut de classe ===
-    router_list = {}   # Un seul Master → acceptable
+    """
+    Représente le serveur central chargé de recevoir et enregistrer les routeurs.
+    """
 
-    def __init__(self, master_ip="127.0.0.1", master_port=5000):
-        self.__master_ip = master_ip
-        self.__master_port = master_port
+    liste_routeurs = {}   # Unique au Master, utilisé pour fournir les routeurs au client
 
-    # ============================
-    # Getters / Setters
-    # ============================
-    def get_master_ip(self):
-        return self.__master_ip
+    def __init__(self, ip_master="127.0.0.1", port_master=5000):
+        self.__ip_master = ip_master
+        self.__port_master = port_master
 
-    def get_master_port(self):
-        return self.__master_port
+    # --- Accesseurs ---
+    def get_ip_master(self):
+        return self.__ip_master
 
-    def set_master_ip(self, new_ip):
-        self.__master_ip = new_ip
+    def get_port_master(self):
+        return self.__port_master
 
-    def set_master_port(self, new_port):
-        self.__master_port = new_port
+    def set_ip_master(self, new_ip):
+        self.__ip_master = new_ip
 
-    # ============================
-    # Gestion des routeurs
-    # ============================
-    def add_router(self, router_id, port, public_key):
-        Master.router_list[router_id] = (port, public_key)
-        print(f"[MASTER] Routeur {router_id} ajouté → port={port}, key={public_key}")
+    def set_port_master(self, new_port):
+        self.__port_master = new_port
 
-    # ============================
-    # Connexions routeur / client
-    # ============================
+    # --- Gestion des routeurs ---
+    def ajouter_routeur(self, id_routeur, port, cle_publique):
+        """Ajoute un routeur à la liste disponible pour les clients."""
+        Master.liste_routeurs[id_routeur] = (port, cle_publique)
+        print(f"→ Routeur enregistré : {id_routeur} (port {port}, clé {cle_publique})")
 
-    def handle_router(self, conn):
-        data = conn.recv(1024).decode().strip()
+    # --- Traitement des messages des routeurs ---
+    def traiter_message_routeur(self, message):
+        """
+        Traite le message reçu d'un routeur et l'enregistre.
+        Format attendu :
+        ROUTER <ID> <CLE> <PORT>
+        """
+        elements = message.split()
 
-        print(f"[MASTER] Message brut reçu du routeur : '{data}'")
-
-        parts = data.split()
-        if len(parts) < 3:
-            print("[MASTER] ERREUR : message routeur invalide :", parts)
-            conn.close()
+        if len(elements) < 4:
+            print("⚠️ Message routeur invalide :", elements)
             return
 
-        router_id = parts[0]
-        public_key = parts[1]
-        listen_port = int(parts[2])
+        id_routeur = elements[1]
+        cle_publique = elements[2]
+        port_ecoute = int(elements[3])
 
-        self.add_router(router_id, listen_port, public_key)
-        conn.close()
+        self.ajouter_routeur(id_routeur, port_ecoute, cle_publique)
 
+    def demarrer(self):
+        """Démarre le Master et écoute les connexions entrantes."""
+        serveur = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        serveur.bind((self.__ip_master, self.__port_master))
+        serveur.listen()
 
-    # ============================
-    # Boucle principale
-    # ============================
-    def start(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind((self.__master_ip, self.__master_port))
-        s.listen()
-
-        print(f"[MASTER] Écoute sur {self.__master_ip}:{self.__master_port}")
+        print(f"Master en écoute sur {self.__ip_master}:{self.__port_master}")
 
         while True:
-            conn, addr = s.accept()
-            mode = conn.recv(6).decode()
+            connexion, adresse = serveur.accept()
+            donnees = connexion.recv(1024).decode().strip()
 
-            if mode == "ROUTER":
-                threading.Thread(target=self.handle_router, args=(conn,)).start()
-            elif mode == "CLIENT":
-                threading.Thread(target=self.handle_client, args=(conn,)).start()
+            if not donnees:
+                connexion.close()
+                continue
+
+            premier_mot = donnees.split()[0]
+
+            if premier_mot == "ROUTER":
+                threading.Thread(target=self.traiter_message_routeur, args=(donnees,)).start()
+
+            connexion.close()
 
 
 if __name__ == "__main__":
     master = Master()
-    master.start()
+    master.demarrer()
