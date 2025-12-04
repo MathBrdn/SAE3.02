@@ -50,7 +50,7 @@ class Routeur:
 
     # --- Boucle d'écoute ---
     def ecouter(self):
-        """Attend les messages des routeurs précédents ou du client."""
+        """Attend les messages entrants et les relaie au prochain routeur."""
         serveur = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         serveur.bind(("0.0.0.0", self.__port_ecoute))
         serveur.listen()
@@ -59,12 +59,22 @@ class Routeur:
 
         while True:
             connexion, adresse = serveur.accept()
-            donnees = connexion.recv(4096).decode()
+            donnees = connexion.recv(4096).decode().strip()
             connexion.close()
 
-            print(f"{self.__id_routeur} ← Message reçu : {donnees}")
+            if not donnees:
+                print(f"{self.__id_routeur} ⚠ Message vide reçu (ignoré)")
+                continue
 
-            ip_suivante, port_suivant, contenu = donnees.split(" ", 2)
+            print(f"{self.__id_routeur} ← Message reçu : {repr(donnees)}")
+
+            # Vérification du format (doit être : <IP> <PORT> <MESSAGE>)
+            parties = donnees.split(" ", 2)
+            if len(parties) < 3:
+                print(f"{self.__id_routeur} ⚠ Format invalide (ignoré) :", parties)
+                continue
+
+            ip_suivante, port_suivant, contenu = parties
             contenu_dechiffre = self.dechiffrer_couche(contenu)
 
             sortie = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -81,7 +91,9 @@ class Routeur:
         self.ecouter()
 
 
-# --- Exécution depuis le terminal ---
+# =====================================================================
+#     EXÉCUTION DIRECTE (en dehors de la classe ! important !)
+# =====================================================================
 if __name__ == "__main__":
     master = Master()
 
@@ -97,12 +109,16 @@ if __name__ == "__main__":
 
         Routeur(id_routeur, PORTS[id_routeur], master).demarrer()
 
-    # Démarage groupé de tous les routeurs
+    # Démarrage groupé des trois routeurs
     elif len(sys.argv) == 1:
         print("Démarrage des trois routeurs…")
 
         for id_routeur, port in PORTS.items():
-            threading.Thread(target=Routeur(id_routeur, port, master).demarrer).start()
+            threading.Thread(
+                target=Routeur(id_routeur, port, master).demarrer
+            ).start()
 
     else:
-        print("Usage :\n python router.py R3\n python router.py")
+        print("Usage :")
+        print("  python router.py R3")
+        print("  python router.py")
