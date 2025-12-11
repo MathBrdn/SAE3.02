@@ -3,78 +3,67 @@ import threading
 
 class Master:
     """
-    Serveur central recevant les déclarations des routeurs et
-    fournissant la liste des routeurs aux clients.
+    Serveur central qui reçoit les déclarations des routeurs
+    et fournit la liste des routeurs aux clients.
     """
 
-    liste_routeurs = {}
+    routeurs = {}  # {ID : (IP, PORT, CLE)}
 
-    def __init__(self, ip_master="127.0.0.1", port_master=5000):
-        self.__ip_master = ip_master
-        self.__port_master = port_master
+    def __init__(self, ip="127.0.0.1", port=5000):
+        self.ip = ip
+        self.port = port
 
-    def get_ip_master(self):
-        return self.__ip_master
+    def ajouter_routeur(self, rid, ip, port, cle):
+        Master.routeurs[rid] = (ip, port, cle)
+        print(f"[MASTER] Routeur enregistré : {rid} - {ip}:{port}")
 
-    def get_port_master(self):
-        return self.__port_master
-
-    # --- Ajout d’un routeur ---
-    def ajouter_routeur(self, id_routeur, port, cle_publique):
-        Master.liste_routeurs[id_routeur] = (port, cle_publique)
-        print(f"→ Routeur enregistré : {id_routeur} (port {port})")
-
-    # --- Message ROUTER ---
     def traiter_message_routeur(self, message):
         """
-        Format : ROUTER <ID> <CLE> <PORT>
+        Format attendu : ROUTER <ID> <IP> <CLE> <PORT>
         """
-        elements = message.split()
-        if len(elements) != 4:
-            print("⚠ Message routeur invalide :", elements)
+        elem = message.split()
+        if len(elem) != 5:
+            print("[MASTER] ERREUR message routeur:", elem)
             return
 
-        _, rid, cle, port = elements
-        self.ajouter_routeur(rid, int(port), cle)
+        _, rid, ip, cle, port = elem
+        self.ajouter_routeur(rid, ip, int(port), cle)
 
-    # --- Message CLIENT ---
-    def traiter_message_client(self, connexion):
-        for rid, (port, cle) in Master.liste_routeurs.items():
-            ligne = f"{rid} {port} {cle}\n"
-            print("MASTER ENVOIE :", repr(ligne))   # debug optionnel
-            connexion.sendall(ligne.encode())
-        connexion.sendall(b"END\n")
+    def traiter_message_client(self, conn):
+        """
+        Envoie tous les routeurs :
+        <ID> <IP> <PORT> <CLE>\n
+        Puis END
+        """
+        for rid, (ip, port, cle) in Master.routeurs.items():
+            ligne = f"{rid} {ip} {port} {cle}\n"
+            conn.sendall(ligne.encode())
+        conn.sendall(b"END\n")
 
-
-
-    # --- Boucle serveur ---
     def demarrer(self):
         serveur = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        serveur.bind((self.__ip_master, self.__port_master))
+        serveur.bind((self.ip, self.port))
         serveur.listen()
 
-        print(f"Master en écoute sur {self.__ip_master}:{self.__port_master}")
+        print(f"[MASTER] Écoute sur {self.ip}:{self.port}")
 
         while True:
-            connexion, adresse = serveur.accept()
-            message = connexion.recv(1024).decode().strip()
+            conn, addr = serveur.accept()
+            data = conn.recv(1024).decode().strip()
 
-            if not message:
-                connexion.close()
+            if not data:
+                conn.close()
                 continue
 
-            type_message = message.split()[0]
+            type_msg = data.split()[0]
 
-            if type_message == "ROUTER":
-                threading.Thread(target=self.traiter_message_routeur, args=(message,)).start()
+            if type_msg == "ROUTER":
+                self.traiter_message_routeur(data)
 
-            elif type_message == "CLIENT":
-                self.traiter_message_client(connexion)
-                connexion.close()
-                continue
+            elif type_msg == "CLIENT":
+                self.traiter_message_client(conn)
 
-
-            connexion.close()
+            conn.close()
 
 
 if __name__ == "__main__":
