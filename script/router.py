@@ -1,77 +1,86 @@
 import socket
-import random
 import sys
 
 MASTER_IP = "127.0.0.1"
 MASTER_PORT = 5000
 
+# ================= CRYPTO =================
+
+def xor_bytes(data: bytes, key: bytes) -> bytes:
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+def rsa_dechiffrer(c: int, d: int, n: int) -> int:
+    return pow(c, d, n)
+
+# ================= ROUTEUR =================
+
 class Routeur:
+    def __init__(self, rid, ip, port):
+        self.__id = rid
+        self.__ip = ip
+        self.__port = port
 
-    def __init__(self, id_routeur, ip_local, port_ecoute):
-        self.id = id_routeur
-        self.ip = ip_local
-        self.port = port_ecoute
-        self.cle_publique = self.generer_cle()
+        # 🔑 RSA pédagogique (FIXE, autorisé)
+        self.__e = 17
+        self.__n = 3233        # 61 * 53
+        self.__d = 2753        # inverse de e mod phi
 
-    def generer_cle(self, longueur=20):
-        return ''.join(str(random.randint(0, 1)) for _ in range(longueur))
-
-    def dechiffrer(self, texte):
-        return ''.join(chr(ord(c) ^ 1) for c in texte)
-
-    def envoyer_au_master(self):
-        msg = f"ROUTER {self.id} {self.ip} {self.cle_publique} {self.port}"
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    def envoyer_master(self):
+        msg = f"ROUTER {self.__id} {self.__ip} {self.__port} {self.__e} {self.__n}"
+        s = socket.socket()
         s.connect((MASTER_IP, MASTER_PORT))
         s.sendall(msg.encode())
         s.close()
-        print(f"[{self.id}] Déclaré au Master.")
+        print(f"[{self.__id}] déclaré au master")
+
+    def envoyer(self, ip, port, data: bytes):
+        s = socket.socket()
+        s.connect((ip, port))
+        s.sendall(data)
+        s.close()
 
     def ecouter(self):
-        serv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        serv.bind((self.ip, self.port))
-        serv.listen()
+        serveur = socket.socket()
+        serveur.bind(("0.0.0.0", self.__port))
+        serveur.listen()
 
-        print(f"[{self.id}] Écoute sur {self.ip}:{self.port}")
+        print(f"[{self.__id}] écoute sur {self.__port}")
 
         while True:
-            conn, addr = serv.accept()
-            data = conn.recv(4096).decode().strip()
-            conn.close()
+            c, _ = serveur.accept()
+            data = c.recv(8192)
+            c.close()
 
             if not data:
+                print(f"[{self.__id}] ⚠ paquet vide")
                 continue
 
-            print(f"[{self.id}] Reçu : {repr(data)}")
+            print(f"[{self.__id}] 📥 paquet reçu ({len(data)} octets)")
 
-            parts = data.split(" ", 2)
-            if len(parts) < 3:
-                print(f"[{self.id}] Format invalide :", parts)
+            # 🔓 Retrait d’UNE couche
+            try:
+                data = self.dechiffrer(data)
+                print(f"[{self.__id}] 🔓 couche retirée")
+            except Exception as e:
+                print(f"[{self.__id}] ❌ ERREUR déchiffrement : {e}")
                 continue
 
-            ip_next, port_next, contenu = parts
-            contenu_dechiffre = self.dechiffrer(contenu)
+            # ---------- ROUTAGE ----------
+            if data.startswith(b"FINAL|"):
+                _, ip, port, msg = data.split(b"|", 3)
+                print(f"[{self.__id}] 🚀 ENVOI AU CLIENT {ip.decode()}:{port.decode()}")
+                self.envoyer(ip.decode(), int(port), msg)
 
-            out = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            out.connect((ip_next, int(port_next)))
-            out.sendall(contenu_dechiffre.encode())
-            out.close()
+            else:
+                ip, port, reste = data.split(b"|", 2)
+                print(f"[{self.__id}] ➡ relais vers {ip.decode()}:{port.decode()}")
+                self.envoyer(ip.decode(), int(port), reste)
 
-            print(f"[{self.id}] Transmis à {ip_next}:{port_next}")
 
     def demarrer(self):
-        self.envoyer_au_master()
+        self.envoyer_master()
         self.ecouter()
 
 
 if __name__ == "__main__":
-
-    if len(sys.argv) != 3:
-        print("Usage : python router.py <ID> <PORT>")
-        exit(1)
-
-    rid = sys.argv[1]
-    port_local = int(sys.argv[2])
-
-    r = Routeur(rid, "127.0.0.1", port_local)
-    r.demarrer()
+    Routeur(sys.argv[1], "127.0.0.1", int(sys.argv[2])).demarrer()

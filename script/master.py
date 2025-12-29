@@ -1,69 +1,51 @@
 import socket
-import threading
 
 class Master:
-    """
-    Serveur central qui reçoit les déclarations des routeurs
-    et fournit la liste des routeurs aux clients.
-    """
-
-    routeurs = {}  # {ID : (IP, PORT, CLE)}
-
     def __init__(self, ip="127.0.0.1", port=5000):
-        self.ip = ip
-        self.port = port
+        self.__ip = ip
+        self.__port = port
+        self.__routeurs = {}  # id -> (ip, port, e, n)
 
-    def ajouter_routeur(self, rid, ip, port, cle):
-        Master.routeurs[rid] = (ip, port, cle)
-        print(f"[MASTER] Routeur enregistré : {rid} - {ip}:{port}")
-
-    def traiter_message_routeur(self, message):
+    def traiter_routeur(self, message: str):
         """
-        Format attendu : ROUTER <ID> <IP> <CLE> <PORT>
+        ROUTER <ID> <IP> <PORT> <E> <N>
         """
-        elem = message.split()
-        if len(elem) != 5:
-            print("[MASTER] ERREUR message routeur:", elem)
+        parts = message.split()
+        if len(parts) != 6 or parts[0] != "ROUTER":
+            print("[MASTER] Message routeur invalide")
             return
 
-        _, rid, ip, cle, port = elem
-        self.ajouter_routeur(rid, ip, int(port), cle)
+        _, rid, ip, port, e, n = parts
+        self.__routeurs[rid] = (ip, int(port), int(e), int(n))
+        print(f"[MASTER] Routeur {rid} enregistré ({ip}:{port})")
 
-    def traiter_message_client(self, conn):
-        """
-        Envoie tous les routeurs :
-        <ID> <IP> <PORT> <CLE>\n
-        Puis END
-        """
-        for rid, (ip, port, cle) in Master.routeurs.items():
-            ligne = f"{rid} {ip} {port} {cle}\n"
-            conn.sendall(ligne.encode())
-        conn.sendall(b"END\n")
+    def traiter_client(self, connexion):
+        for rid, (ip, port, e, n) in self.__routeurs.items():
+            connexion.sendall(f"{rid} {ip} {port} {e} {n}\n".encode())
+        connexion.sendall(b"END\n")
 
     def demarrer(self):
-        serveur = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        serveur.bind((self.ip, self.port))
-        serveur.listen()
+        s = socket.socket()
+        s.bind((self.__ip, self.__port))
+        s.listen()
 
-        print(f"[MASTER] Écoute sur {self.ip}:{self.port}")
+        print(f"[MASTER] Écoute sur {self.__ip}:{self.__port}")
 
         while True:
-            conn, addr = serveur.accept()
-            data = conn.recv(1024).decode().strip()
+            connexion, _ = s.accept()
+            message = connexion.recv(4096).decode().strip()
 
-            if not data:
-                conn.close()
+            if not message:
+                connexion.close()
                 continue
 
-            type_msg = data.split()[0]
+            if message.startswith("ROUTER"):
+                self.traiter_routeur(message)
 
-            if type_msg == "ROUTER":
-                self.traiter_message_routeur(data)
+            elif message == "CLIENT":
+                self.traiter_client(connexion)
 
-            elif type_msg == "CLIENT":
-                self.traiter_message_client(conn)
-
-            conn.close()
+            connexion.close()
 
 
 if __name__ == "__main__":
