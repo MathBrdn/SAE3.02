@@ -4,77 +4,52 @@ import sys
 MASTER_IP = "127.0.0.1"
 MASTER_PORT = 5000
 
-# ================= CRYPTO =================
-
-def xor_bytes(data: bytes, key: bytes) -> bytes:
-    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
-
-def rsa_dechiffrer(c: int, d: int, n: int) -> int:
-    return pow(c, d, n)
-
-# ================= ROUTEUR =================
-
 class Routeur:
-    def __init__(self, rid, ip, port):
+    def __init__(self, rid, port):
         self.__id = rid
-        self.__ip = ip
         self.__port = port
 
-        # 🔑 RSA pédagogique (FIXE, autorisé)
-        self.__e = 17
-        self.__n = 3233        # 61 * 53
-        self.__d = 2753        # inverse de e mod phi
-
     def envoyer_master(self):
-        msg = f"ROUTER {self.__id} {self.__ip} {self.__port} {self.__e} {self.__n}"
+        msg = f"ROUTER {self.__id} 127.0.0.1 {self.__port}"
         s = socket.socket()
         s.connect((MASTER_IP, MASTER_PORT))
         s.sendall(msg.encode())
         s.close()
         print(f"[{self.__id}] déclaré au master")
 
-    def envoyer(self, ip, port, data: bytes):
+    def envoyer(self, ip, port, data):
         s = socket.socket()
         s.connect((ip, port))
         s.sendall(data)
         s.close()
 
     def ecouter(self):
-        serveur = socket.socket()
-        serveur.bind(("0.0.0.0", self.__port))
-        serveur.listen()
-
+        s = socket.socket()
+        s.bind(("0.0.0.0", self.__port))
+        s.listen()
         print(f"[{self.__id}] écoute sur {self.__port}")
 
         while True:
-            c, _ = serveur.accept()
+            c, _ = s.accept()
             data = c.recv(8192)
             c.close()
 
             if not data:
-                print(f"[{self.__id}] ⚠ paquet vide")
                 continue
 
-            print(f"[{self.__id}] 📥 paquet reçu ({len(data)} octets)")
-
-            # 🔓 Retrait d’UNE couche
-            try:
-                data = self.dechiffrer(data)
-                print(f"[{self.__id}] 🔓 couche retirée")
-            except Exception as e:
-                print(f"[{self.__id}] ❌ ERREUR déchiffrement : {e}")
-                continue
+            text = data.decode(errors="ignore")
 
             # ---------- ROUTAGE ----------
-            if data.startswith(b"FINAL|"):
-                _, ip, port, msg = data.split(b"|", 3)
-                print(f"[{self.__id}] 🚀 ENVOI AU CLIENT {ip.decode()}:{port.decode()}")
-                self.envoyer(ip.decode(), int(port), msg)
-
+            if text.startswith("ROUTE|"):
+                try:
+                    _, ip, port, reste = text.split("|", 3)
+                    print(f"[{self.__id}] ➡ vers {ip}:{port}")
+                    self.envoyer(ip, int(port), reste.encode())
+                except Exception:
+                    print(f"[{self.__id}] ❌ paquet invalide")
             else:
-                ip, port, reste = data.split(b"|", 2)
-                print(f"[{self.__id}] ➡ relais vers {ip.decode()}:{port.decode()}")
-                self.envoyer(ip.decode(), int(port), reste)
+                # sécurité : ne rien faire si paquet inattendu
+                print(f"[{self.__id}] ⚠ paquet ignoré")
 
 
     def demarrer(self):
@@ -83,4 +58,4 @@ class Routeur:
 
 
 if __name__ == "__main__":
-    Routeur(sys.argv[1], "127.0.0.1", int(sys.argv[2])).demarrer()
+    Routeur(sys.argv[1], int(sys.argv[2])).demarrer()

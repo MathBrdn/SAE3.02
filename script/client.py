@@ -2,16 +2,9 @@ import socket
 import random
 import sys
 import threading
-import os
 
 MASTER_IP = "127.0.0.1"
 MASTER_PORT = 5000
-
-def xor_bytes(data: bytes, key: bytes) -> bytes:
-    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
-
-def rsa_chiffrer(m: int, e: int, n: int) -> int:
-    return pow(m, e, n)
 
 class Client:
     def __init__(self, ip, port):
@@ -19,24 +12,16 @@ class Client:
         self.__port = port
 
     def ecouter(self):
-        serveur = socket.socket()
-        serveur.bind((self.__ip, self.__port))
-        serveur.listen()
-
+        s = socket.socket()
+        s.bind((self.__ip, self.__port))
+        s.listen()
         print(f"[CLIENT {self.__port}] 🟢 en attente...")
 
         while True:
-            c, _ = serveur.accept()
-            data = c.recv(8192)
+            c, _ = s.accept()
+            msg = c.recv(8192)
             c.close()
-
-            if not data:
-                print("[CLIENT] ⚠ paquet vide")
-                continue
-
-            print(f"[CLIENT {self.__port}] 📩 paquet reçu ({len(data)} octets)")
-            print(f"[CLIENT {self.__port}] ✅ MESSAGE FINAL : {data.decode(errors='ignore')}")
-
+            print(f"[CLIENT {self.__port}] 📩 MESSAGE FINAL : {msg.decode()}")
 
     def recuperer_routeurs(self):
         s = socket.socket()
@@ -52,8 +37,8 @@ class Client:
         for l in buffer.splitlines():
             if l == "END":
                 break
-            rid, ip, port, e, n = l.split()
-            routeurs.append((ip, int(port), int(e), int(n)))
+            rid, ip, port = l.split()
+            routeurs.append((ip, int(port)))
 
         return routeurs
 
@@ -61,22 +46,21 @@ class Client:
         routeurs = self.recuperer_routeurs()
         chemin = random.sample(routeurs, nb_routeurs)
 
-        payload = message.encode()
+        payload = message
 
-        for ip, port, e, n in reversed(chemin):
-            cle_xor = os.urandom(16)
-            payload = xor_bytes(payload, cle_xor)
-            cle_int = int.from_bytes(cle_xor, "big")
-            cle_rsa = rsa_chiffrer(cle_int, e, n)
-            payload = f"{cle_rsa}|{ip}|{port}|".encode() + payload
+        # le dernier saut est le client final
+        payload = f"ROUTE|{ip_dest}|{port_dest}|{message}"
 
-        ip0, port0, *_ = chemin[0]
+        # on empile uniquement les routeurs SUIVANTS
+        for ip, port in reversed(chemin[1:]):
+            payload = f"ROUTE|{ip}|{port}|{payload}"
+
+
         s = socket.socket()
-        s.connect((ip0, port0))
-        s.sendall(payload)
+        s.connect(chemin[0])
+        s.sendall(payload.encode())
         s.close()
-
-        print("[CLIENT] message envoyé")
+        print("[CLIENT] 🟢 message envoyé")
 
 
 if __name__ == "__main__":
