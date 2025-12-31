@@ -1,129 +1,184 @@
-import socket
 import sys
+import socket
+import threading
 import mysql.connector
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton,
+    QListWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QMessageBox
+)
+from PyQt5.QtCore import Qt
 
 
-class Master:
-    def __init__(self, public_ip: str, port: int):
-        self.public_ip = public_ip
-        self.port = port
+class MasterGUI(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Master SAE302")
+        self.setMinimumWidth(500)
 
-        # Connexion MariaDB (locale Ã  la VM master)
+        self.server_socket = None
+        self.running = False
+
+        self.init_ui()
+        self.apply_style()
+
+    # ================= UI =================
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+
+        layout.addWidget(self.master_box())
+        layout.addWidget(self.routeur_box())
+
+        self.setLayout(layout)
+
+    def apply_style(self):
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #1b1b1b;
+                color: #e0e0e0;
+                font-size: 12px;
+            }
+            QLineEdit {
+                background-color: #2a2a2a;
+                border: 1px solid #4a4a4a;
+                padding: 4px;
+            }
+            QPushButton {
+                background-color: #7a1f1f;
+                border: none;
+                padding: 6px;
+            }
+            QPushButton:hover {
+                background-color: #a83232;
+            }
+            QGroupBox {
+                border: 1px solid #4a4a4a;
+                margin-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 4px 0 4px;
+            }
+        """)
+
+    # ================= MASTER =================
+
+    def master_box(self):
+        box = QGroupBox("Configuration Master")
+        layout = QHBoxLayout()
+
+        self.ip_input = QLineEdit()
+        self.port_input = QLineEdit()
+
+        self.start_btn = QPushButton("DÃ©marrer")
+        self.start_btn.clicked.connect(self.demarrer_master)
+
+        layout.addWidget(QLabel("IP"))
+        layout.addWidget(self.ip_input)
+        layout.addWidget(QLabel("Port"))
+        layout.addWidget(self.port_input)
+        layout.addWidget(self.start_btn)
+
+        box.setLayout(layout)
+        return box
+
+    def demarrer_master(self):
         try:
-            self.db = mysql.connector.connect(
+            ip = self.ip_input.text()
+            port = int(self.port_input.text())
+
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.bind(("0.0.0.0", port))
+            self.server_socket.listen()
+
+            self.public_ip = ip
+            self.port = port
+            self.running = True
+
+            threading.Thread(target=self.ecouter, daemon=True).start()
+
+            QMessageBox.information(self, "Master", "Master dÃ©marrÃ©")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Erreur", str(e))
+
+    # ================= ROUTEURS =================
+
+    def routeur_box(self):
+        box = QGroupBox("Routeurs dÃ©clarÃ©s")
+        layout = QVBoxLayout()
+
+        self.routeur_list = QListWidget()
+        layout.addWidget(self.routeur_list)
+
+        box.setLayout(layout)
+        return box
+
+    def ajouter_routeur(self, rid, ip, port):
+        self.routeur_list.addItem(f"{rid} - {ip}:{port}")
+
+    # ================= SOCKET =================
+
+    def ecouter(self):
+        try:
+            db = mysql.connector.connect(
                 host="localhost",
                 user="toto",
                 password="toto",
                 database="SAE302"
             )
-            self.cursor = self.db.cursor()
-            print("[MASTER] Connexion MariaDB OK")
+            cursor = db.cursor()
 
         except mysql.connector.Error as e:
-            print(f"[MASTER] Erreur connexion DB : {e}")
-            sys.exit(1)
-
-    # ================= RESET BDD =================
-    def reset_database(self):
-        try:
-            self.cursor.execute("DELETE FROM routeurs")
-            self.cursor.execute("DELETE FROM clients")
-            self.db.commit()
-            print("[MASTER] Base de donnÃ©es rÃ©initialisÃ©e (routeurs + clients)")
-
-        except mysql.connector.Error as e:
-            print(f"[MASTER] Erreur reset BDD : {e}")
-            sys.exit(1)
-
-    # ================= ROUTEUR =================
-    def traiter_routeur(self, message: str):
-        """
-        Message attendu :
-        ROUTER <ID> <PORT>
-        """
-        parts = message.split()
-        if len(parts) != 3 or parts[0] != "ROUTER":
-            print("[MASTER] Message routeur invalide")
+            QMessageBox.critical(self, "DB", str(e))
             return
 
-        _, rid, port = parts
-
-        try:
-            self.cursor.execute(
-                """
-                INSERT INTO routeurs (id_routeur, port, cle_publique)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE port=%s
-                """,
-                (rid, int(port), "NOPUBKEY", int(port))
-            )
-            self.db.commit()
-            print(f"[MASTER] Routeur {rid} enregistre (port {port})")
-
-        except mysql.connector.Error as e:
-            print(f"[MASTER] Erreur DB routeur : {e}")
-
-    # ================= CLIENT =================
-    def traiter_client(self, connexion: socket.socket):
-        """
-        Envoie :
-        <ID_ROUTEUR> <IP_MASTER> <PORT>
-        """
-        try:
-            self.cursor.execute(
-                "SELECT id_routeur, port FROM routeurs"
-            )
-
-            for rid, port in self.cursor.fetchall():
-                ligne = f"{rid} {self.public_ip} {port}\n"
-                connexion.sendall(ligne.encode())
-
-            connexion.sendall(b"END\n")
-
-        except mysql.connector.Error as e:
-            print(f"[MASTER] Erreur DB client : {e}")
-
-    # ================= SERVEUR =================
-    def demarrer(self):
-        # RESET COMPLET AU DEMARRAGE
-        self.reset_database()
-
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("0.0.0.0", self.port))
-        s.listen()
-
-        print(f"[MASTER] Ecoute sur 0.0.0.0:{self.port}")
-        print(f"[MASTER] IP publique annoncee : {self.public_ip}")
-
-        while True:
-            connexion, _ = s.accept()
-
+        while self.running:
+            conn, addr = self.server_socket.accept()
             try:
-                message = connexion.recv(4096).decode().strip()
+                msg = conn.recv(4096).decode().strip()
 
-                if not message:
-                    connexion.close()
-                    continue
+                if msg.startswith("ROUTER"):
+                    # ROUTER ID IP PORT E N
+                    parts = msg.split()
+                    if len(parts) != 6:
+                        conn.close()
+                        continue
 
-                if message.startswith("ROUTER"):
-                    self.traiter_routeur(message)
+                    _, rid, ip_r, port, e, n = parts
 
-                elif message == "CLIENT":
-                    self.traiter_client(connexion)
+                    cursor.execute(
+                        """
+                        INSERT INTO routeurs (id_routeur, ip_routeur, port, cle_publique)
+                        VALUES (%s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                        ip_routeur=%s, port=%s, cle_publique=%s
+                        """,
+                        (rid, ip_r, int(port), f"{e}:{n}",
+                         ip_r, int(port), f"{e}:{n}")
+                    )
+                    db.commit()
 
-            except Exception as e:
-                print(f"[MASTER] Erreur socket : {e}")
+                    self.ajouter_routeur(rid, ip_r, port)
 
-            connexion.close()
+                elif msg == "CLIENT":
+                    cursor.execute("SELECT id_routeur, ip_routeur, port, cle_publique FROM routeurs")
+                    for rid, ip_r, port, cle in cursor.fetchall():
+                        e, n = cle.split(":")
+                        conn.sendall(f"{rid} {ip_r} {port} {e} {n}\n".encode())
+                    conn.sendall(b"END\n")
+
+            except Exception:
+                pass
+
+            conn.close()
 
 
 # ================= MAIN =================
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage : python3 master.py <IP_PUBLIQUE> <PORT>")
-        sys.exit(1)
-
-    ip_publique = sys.argv[1]
-    port = int(sys.argv[2])
-
-    Master(ip_publique, port).demarrer()
+    app = QApplication(sys.argv)
+    window = MasterGUI()
+    window.show()
+    sys.exit(app.exec_())

@@ -1,39 +1,80 @@
 import sys
 import socket
 import threading
+import random
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit,
-    QPushButton, QListWidget, QVBoxLayout,
-    QHBoxLayout, QMessageBox
+    QPushButton, QListWidget, QVBoxLayout
 )
 from PyQt5.QtCore import Qt
 
 
-MASTER_IP = "192.168.178.3"   # à adapter si besoin
-MASTER_PORT = 5000
+# ================= RSA PÃ‰DAGOGIQUE =================
+
+def pgcd(a, b):
+    while b:
+        a, b = b, a % b
+    return a
+
+def inverse_modulaire(e, phi):
+    for d in range(3, phi):
+        if (d * e) % phi == 1:
+            return d
+    raise Exception("Inverse modulaire introuvable")
+
+def nombre_premier():
+    while True:
+        n = random.randrange(1000, 5000)
+        for i in range(2, int(n ** 0.5) + 1):
+            if n % i == 0:
+                break
+        else:
+            return n
+
+def generer_cle_rsa():
+    p = nombre_premier()
+    q = nombre_premier()
+    n = p * q
+    phi = (p - 1) * (q - 1)
+    e = 65537
+    d = inverse_modulaire(e, phi)
+    return e, d, n
 
 
-# ================= ROUTEUR LOGIQUE =================
+# ================= ROUTEUR =================
 
 class Routeur:
-    def __init__(self, rid, port):
+    def __init__(self, rid, ip_vm, port, master_ip, master_port):
         self.rid = rid
+        self.ip_vm = ip_vm
         self.port = port
+        self.master_ip = master_ip
+        self.master_port = master_port
+
+        # \uD83D\uDD10 GÃ©nÃ©ration des clÃ©s RSA
+        self.e, self.d, self.n = generer_cle_rsa()
 
     def envoyer_master(self):
-        try:
-            s = socket.socket()
-            s.connect((MASTER_IP, MASTER_PORT))
-            s.sendall(f"ROUTER {self.rid} {self.port}".encode())
-            s.close()
-        except Exception as e:
-            print(f"[{self.rid}] Erreur connexion master : {e}")
+        msg = f"ROUTER {self.rid} {self.ip_vm} {self.port} {self.e} {self.n}"
+        s = socket.socket()
+        s.connect((self.master_ip, self.master_port))
+        s.sendall(msg.encode())
+        s.close()
+
+        print(f"[{self.rid}] clÃ© publique envoyÃ©e au master")
+
+    def envoyer(self, ip, port, data):
+        s = socket.socket()
+        s.connect((ip, port))
+        s.sendall(data)
+        s.close()
 
     def ecouter(self):
         s = socket.socket()
         s.bind(("0.0.0.0", self.port))
         s.listen()
-        print(f"[{self.rid}] Routeur actif sur port {self.port}")
+
+        print(f"[{self.rid}] Ã©coute sur {self.ip_vm}:{self.port}")
 
         while True:
             c, _ = s.accept()
@@ -43,132 +84,95 @@ class Routeur:
             if not data:
                 continue
 
-            text = data.decode(errors="ignore")
-
-            if text.startswith("ROUTE|"):
-                try:
+            try:
+                text = data.decode()
+                if text.startswith("ROUTE|"):
                     _, ip, port, reste = text.split("|", 3)
-                    print(f"[{self.rid}] Relais vers {ip}:{port}")
-                    self.envoyer(ip, int(port), reste)
-                except Exception:
-                    print(f"[{self.rid}] Paquet invalide")
-
-    def envoyer(self, ip, port, payload):
-        try:
-            s = socket.socket()
-            s.connect((ip, port))
-            s.sendall(payload.encode())
-            s.close()
-        except Exception as e:
-            print(f"[{self.rid}] Erreur envoi : {e}")
+                    self.envoyer(ip, int(port), reste.encode())
+            except Exception:
+                print(f"[{self.rid}] paquet invalide")
 
     def demarrer(self):
         self.envoyer_master()
         self.ecouter()
 
 
-# ================= THREAD ROUTEUR =================
+# ================= GUI =================
 
-def lancer_routeur(rid, port):
-    r = Routeur(rid, port)
-    r.demarrer()
-
-
-# ================= INTERFACE GRAPHIQUE =================
-
-class RouterGUI(QWidget):
+class RouteurGUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Gestionnaire de routeurs")
-        self.setFixedSize(420, 400)
-
+        self.setWindowTitle("Routeur SAE302")
+        self.setFixedSize(420, 480)
         self.init_ui()
 
     def init_ui(self):
-        # Styles
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #f4f7fb;
-                font-size: 14px;
-            }
-            QLabel {
-                color: #1f3c88;
-                font-weight: bold;
-            }
-            QPushButton {
-                background-color: #1f6feb;
-                color: white;
-                padding: 8px;
-                border-radius: 6px;
-            }
-            QPushButton:hover {
-                background-color: #1558c0;
-            }
-            QListWidget {
-                background-color: white;
-                border-radius: 6px;
-            }
-        """)
+        layout = QVBoxLayout()
 
-        # Widgets
-        title = QLabel("Création de routeur")
+        title = QLabel("CrÃ©ation de routeur")
         title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:18px; color:#4da6ff;")
+        layout.addWidget(title)
 
-        self.id_input = QLineEdit()
-        self.id_input.setPlaceholderText("ID du routeur (ex: R1)")
+        self.rid_input = self.input("ID du routeur")
+        self.port_input = self.input("Port du routeur")
+        self.ip_vm_input = self.input("IP VM routeurs")
+        self.master_ip_input = self.input("IP du master")
+        self.master_port_input = self.input("Port du master")
 
-        self.port_input = QLineEdit()
-        self.port_input.setPlaceholderText("Port d'écoute (ex: 6001)")
+        for w in [
+            self.rid_input, self.port_input,
+            self.ip_vm_input, self.master_ip_input,
+            self.master_port_input
+        ]:
+            layout.addWidget(w)
 
-        btn = QPushButton("Créer le routeur")
-        btn.clicked.connect(self.creer_routeur)
+        btn = QPushButton("CrÃ©er et dÃ©marrer")
+        btn.clicked.connect(self.lancer_routeur)
+        btn.setStyleSheet("background-color:#4da6ff; padding:8px;")
+        layout.addWidget(btn)
 
         self.liste = QListWidget()
-
-        # Layouts
-        layout = QVBoxLayout()
-        layout.addWidget(title)
-        layout.addSpacing(10)
-        layout.addWidget(self.id_input)
-        layout.addWidget(self.port_input)
-        layout.addWidget(btn)
-        layout.addSpacing(15)
-        layout.addWidget(QLabel("Routeurs actifs :"))
         layout.addWidget(self.liste)
 
         self.setLayout(layout)
+        self.setStyleSheet("""
+            QWidget { background-color:#1e1e1e; color:white; }
+            QLineEdit { background:#2a2a2a; color:white; padding:5px; }
+        """)
 
-    def creer_routeur(self):
-        rid = self.id_input.text().strip()
-        port_text = self.port_input.text().strip()
+    def input(self, text):
+        f = QLineEdit()
+        f.setPlaceholderText(text)
+        return f
 
-        if not rid or not port_text:
-            QMessageBox.warning(self, "Erreur", "ID et port sont obligatoires")
-            return
-
+    def lancer_routeur(self):
         try:
-            port = int(port_text)
-        except ValueError:
-            QMessageBox.warning(self, "Erreur", "Port invalide")
-            return
+            routeur = Routeur(
+                self.rid_input.text(),
+                self.ip_vm_input.text(),
+                int(self.port_input.text()),
+                self.master_ip_input.text(),
+                int(self.master_port_input.text())
+            )
 
-        # Lancer le routeur dans un thread
-        t = threading.Thread(
-            target=lancer_routeur,
-            args=(rid, port),
-            daemon=True
-        )
-        t.start()
+            threading.Thread(
+                target=routeur.demarrer,
+                daemon=True
+            ).start()
 
-        self.liste.addItem(f"{rid} - port {port}")
-        self.id_input.clear()
-        self.port_input.clear()
+            self.liste.addItem(
+                f"{routeur.rid} | {routeur.ip_vm}:{routeur.port}"
+            )
+
+        except Exception as e:
+            self.liste.addItem(f"Erreur : {e}")
 
 
 # ================= MAIN =================
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    gui = RouterGUI()
+    gui = RouteurGUI()
     gui.show()
     sys.exit(app.exec_())
