@@ -1,46 +1,129 @@
 import socket
+import sys
+import mysql.connector
+
 
 class Master:
-    def __init__(self, ip="127.0.0.1", port=5000):
-        self.__ip = ip
-        self.__port = port
-        self.__routeurs = {}  # id -> (ip, port)
+    def __init__(self, public_ip: str, port: int):
+        self.public_ip = public_ip
+        self.port = port
 
+        # Connexion MariaDB (locale Ã  la VM master)
+        try:
+            self.db = mysql.connector.connect(
+                host="localhost",
+                user="toto",
+                password="toto",
+                database="SAE302"
+            )
+            self.cursor = self.db.cursor()
+            print("[MASTER] Connexion MariaDB OK")
+
+        except mysql.connector.Error as e:
+            print(f"[MASTER] Erreur connexion DB : {e}")
+            sys.exit(1)
+
+    # ================= RESET BDD =================
+    def reset_database(self):
+        try:
+            self.cursor.execute("DELETE FROM routeurs")
+            self.cursor.execute("DELETE FROM clients")
+            self.db.commit()
+            print("[MASTER] Base de donnÃ©es rÃ©initialisÃ©e (routeurs + clients)")
+
+        except mysql.connector.Error as e:
+            print(f"[MASTER] Erreur reset BDD : {e}")
+            sys.exit(1)
+
+    # ================= ROUTEUR =================
     def traiter_routeur(self, message: str):
         """
-        ROUTER <ID> <IP> <PORT>
+        Message attendu :
+        ROUTER <ID> <PORT>
         """
         parts = message.split()
-        if len(parts) != 4 or parts[0] != "ROUTER":
+        if len(parts) != 3 or parts[0] != "ROUTER":
             print("[MASTER] Message routeur invalide")
             return
 
-        _, rid, ip, port = parts
-        self.__routeurs[rid] = (ip, int(port))
-        print(f"[MASTER] Routeur {rid} enregistré ({ip}:{port})")
+        _, rid, port = parts
 
-    def traiter_client(self, connexion):
-        for rid, (ip, port) in self.__routeurs.items():
-            connexion.sendall(f"{rid} {ip} {port}\n".encode())
-        connexion.sendall(b"END\n")
+        try:
+            self.cursor.execute(
+                """
+                INSERT INTO routeurs (id_routeur, port, cle_publique)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE port=%s
+                """,
+                (rid, int(port), "NOPUBKEY", int(port))
+            )
+            self.db.commit()
+            print(f"[MASTER] Routeur {rid} enregistre (port {port})")
 
+        except mysql.connector.Error as e:
+            print(f"[MASTER] Erreur DB routeur : {e}")
+
+    # ================= CLIENT =================
+    def traiter_client(self, connexion: socket.socket):
+        """
+        Envoie :
+        <ID_ROUTEUR> <IP_MASTER> <PORT>
+        """
+        try:
+            self.cursor.execute(
+                "SELECT id_routeur, port FROM routeurs"
+            )
+
+            for rid, port in self.cursor.fetchall():
+                ligne = f"{rid} {self.public_ip} {port}\n"
+                connexion.sendall(ligne.encode())
+
+            connexion.sendall(b"END\n")
+
+        except mysql.connector.Error as e:
+            print(f"[MASTER] Erreur DB client : {e}")
+
+    # ================= SERVEUR =================
     def demarrer(self):
-        s = socket.socket()
-        s.bind((self.__ip, self.__port))
+        # RESET COMPLET AU DEMARRAGE
+        self.reset_database()
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("0.0.0.0", self.port))
         s.listen()
-        print(f"[MASTER] Écoute sur {self.__ip}:{self.__port}")
+
+        print(f"[MASTER] Ecoute sur 0.0.0.0:{self.port}")
+        print(f"[MASTER] IP publique annoncee : {self.public_ip}")
 
         while True:
-            c, _ = s.accept()
-            msg = c.recv(4096).decode().strip()
+            connexion, _ = s.accept()
 
-            if msg.startswith("ROUTER"):
-                self.traiter_routeur(msg)
-            elif msg == "CLIENT":
-                self.traiter_client(c)
+            try:
+                message = connexion.recv(4096).decode().strip()
 
-            c.close()
+                if not message:
+                    connexion.close()
+                    continue
+
+                if message.startswith("ROUTER"):
+                    self.traiter_routeur(message)
+
+                elif message == "CLIENT":
+                    self.traiter_client(connexion)
+
+            except Exception as e:
+                print(f"[MASTER] Erreur socket : {e}")
+
+            connexion.close()
 
 
+# ================= MAIN =================
 if __name__ == "__main__":
-    Master().demarrer()
+    if len(sys.argv) != 3:
+        print("Usage : python3 master.py <IP_PUBLIQUE> <PORT>")
+        sys.exit(1)
+
+    ip_publique = sys.argv[1]
+    port = int(sys.argv[2])
+
+    Master(ip_publique, port).demarrer()

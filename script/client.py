@@ -3,29 +3,36 @@ import random
 import sys
 import threading
 
-MASTER_IP = "127.0.0.1"
-MASTER_PORT = 5000
 
 class Client:
-    def __init__(self, ip, port):
-        self.__ip = ip
-        self.__port = port
+    def __init__(self, client_ip, client_port, master_ip, master_port):
+        self.client_ip = client_ip
+        self.client_port = client_port
+        self.master_ip = master_ip
+        self.master_port = master_port
 
+    # ---------- ÉCOUTE ----------
     def ecouter(self):
         s = socket.socket()
-        s.bind((self.__ip, self.__port))
+        s.bind((self.client_ip, self.client_port))
         s.listen()
-        print(f"[CLIENT {self.__port}] 🟢 en attente...")
+
+        print(f"[CLIENT {self.client_ip}:{self.client_port}] en attente...")
 
         while True:
             c, _ = s.accept()
-            msg = c.recv(8192)
+            data = c.recv(8192)
             c.close()
-            print(f"[CLIENT {self.__port}] 📩 MESSAGE FINAL : {msg.decode()}")
 
+            if not data:
+                continue
+
+            print(f"[CLIENT {self.client_port}] MESSAGE FINAL : {data.decode(errors='ignore')}")
+
+    # ---------- MASTER ----------
     def recuperer_routeurs(self):
         s = socket.socket()
-        s.connect((MASTER_IP, MASTER_PORT))
+        s.connect((self.master_ip, self.master_port))
         s.sendall(b"CLIENT")
 
         buffer = ""
@@ -34,46 +41,81 @@ class Client:
         s.close()
 
         routeurs = []
-        for l in buffer.splitlines():
-            if l == "END":
+        for line in buffer.splitlines():
+            if line == "END":
                 break
-            rid, ip, port = l.split()
-            routeurs.append((ip, int(port)))
+            rid, ip, port = line.split()
+            routeurs.append((rid, ip, int(port)))
 
         return routeurs
 
-    def envoyer_message(self, message, ip_dest, port_dest, nb_routeurs=3):
+    # ---------- ENVOI ----------
+    def envoyer_message(self, message, dest_ip, dest_port, nb_routeurs):
         routeurs = self.recuperer_routeurs()
+
+        if len(routeurs) < nb_routeurs:
+            print("[CLIENT] Pas assez de routeurs disponibles")
+            return
+
         chemin = random.sample(routeurs, nb_routeurs)
 
-        payload = message
+        print("[CLIENT] Chemin choisi :")
+        for rid, ip, port in chemin:
+            print(f"   - {rid} ({ip}:{port})")
 
-        # le dernier saut est le client final
-        payload = f"ROUTE|{ip_dest}|{port_dest}|{message}"
+        # Dernière étape : client destinataire
+        payload = f"ROUTE|{dest_ip}|{dest_port}|{message}"
 
-        # on empile uniquement les routeurs SUIVANTS
-        for ip, port in reversed(chemin[1:]):
+        # Empilement des routeurs (sauf le premier)
+        for _, ip, port in reversed(chemin[1:]):
             payload = f"ROUTE|{ip}|{port}|{payload}"
 
+        # Envoi au premier routeur
+        _, ip0, port0 = chemin[0]
 
-        s = socket.socket()
-        s.connect(chemin[0])
-        s.sendall(payload.encode())
-        s.close()
-        print("[CLIENT] 🟢 message envoyé")
+        try:
+            s = socket.socket()
+            s.connect((ip0, port0))
+            s.sendall(payload.encode())
+            s.close()
+            print("[CLIENT] message envoyé")
 
+        except Exception as e:
+            print(f"[CLIENT] erreur envoi vers {ip0}:{port0} -> {e}")
+
+
+# ================= MAIN =================
 
 if __name__ == "__main__":
-    port = int(sys.argv[1])
-    c = Client("127.0.0.1", port)
-    threading.Thread(target=c.ecouter, daemon=True).start()
+    if len(sys.argv) < 5:
+        print("Usage :")
+        print("  python client.py <CLIENT_IP> <CLIENT_PORT> <MASTER_IP> <MASTER_PORT>")
+        print("  python client.py <CLIENT_IP> <CLIENT_PORT> <MASTER_IP> <MASTER_PORT> send <DEST_IP> <DEST_PORT> \"MESSAGE\" <NB_ROUTEURS>")
+        sys.exit(1)
 
-    if len(sys.argv) > 4 and sys.argv[2] == "send":
-        c.envoyer_message(
-            " ".join(sys.argv[5:]),
-            sys.argv[3],
-            int(sys.argv[4])
-        )
+    client_ip = sys.argv[1]
+    client_port = int(sys.argv[2])
+    master_ip = sys.argv[3]
+    master_port = int(sys.argv[4])
 
+    client = Client(client_ip, client_port, master_ip, master_port)
+
+    # Thread écoute
+    threading.Thread(target=client.ecouter, daemon=True).start()
+
+    # Envoi optionnel
+    if len(sys.argv) > 5 and sys.argv[5] == "send":
+        if len(sys.argv) < 10:
+            print("Arguments manquants pour l'envoi")
+            sys.exit(1)
+
+        dest_ip = sys.argv[6]
+        dest_port = int(sys.argv[7])
+        message = sys.argv[8]
+        nb_routeurs = int(sys.argv[9])
+
+        client.envoyer_message(message, dest_ip, dest_port, nb_routeurs)
+
+    # Boucle infinie
     while True:
         pass
